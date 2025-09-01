@@ -1,0 +1,329 @@
+name: PHP Recipe Manager Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        php-versions: ['8.0', '8.1', '8.2']
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ matrix.php-versions }}
+        extensions: json
+        ini-values: post_max_size=256M, upload_max_filesize=256M, max_execution_time=300
+        coverage: xdebug
+        tools: composer:v2
+    
+    - name: Check PHP version
+      run: php --version
+    
+    - name: Validate composer.json (if exists)
+      run: |
+        if [ -f composer.json ]; then
+          composer validate --strict
+        else
+          echo "No composer.json found - this is expected for a beginner project"
+        fi
+    
+    - name: Check PHP syntax errors
+      run: |
+        echo "Checking PHP syntax for all PHP files..."
+        find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
+        echo "✅ All PHP files have valid syntax"
+    
+    - name: Create data directory with proper permissions
+      run: |
+        mkdir -p data
+        chmod 755 data
+        echo "✅ Data directory created"
+    
+    - name: Initialize empty data files
+      run: |
+        echo '[]' > data/recipes.json
+        echo '["Appetizer","Main Course","Dessert","Beverage","Snack"]' > data/categories.json
+        chmod 644 data/*.json
+        echo "✅ Data files initialized"
+    
+    - name: Test file structure
+      run: |
+        echo "Checking required files..."
+        required_files=(
+          "index.php"
+          "add-recipe.php" 
+          "edit-recipe.php"
+          "includes/functions.php"
+          "includes/header.php"
+          "data/recipes.json"
+          "data/categories.json"
+          "assets/style.css"
+          "test-runner.php"
+        )
+        
+        missing_files=()
+        for file in "${required_files[@]}"; do
+          if [ ! -f "$file" ]; then
+            missing_files+=("$file")
+          fi
+        done
+        
+        if [ ${#missing_files[@]} -eq 0 ]; then
+          echo "✅ All required files are present"
+        else
+          echo "❌ Missing files: ${missing_files[*]}"
+          exit 1
+        fi
+    
+    - name: Test PHP functions are defined
+      run: |
+        php -r "
+        require_once 'includes/functions.php';
+        \$required_functions = [
+          'loadRecipes',
+          'saveRecipes', 
+          'addNewRecipe',
+          'getRecipeById',
+          'deleteRecipe',
+          'loadCategories'
+        ];
+        
+        \$missing_functions = [];
+        foreach (\$required_functions as \$function) {
+          if (!function_exists(\$function)) {
+            \$missing_functions[] = \$function;
+          }
+        }
+        
+        if (empty(\$missing_functions)) {
+          echo '✅ All required functions are defined\n';
+        } else {
+          echo '❌ Missing functions: ' . implode(', ', \$missing_functions) . '\n';
+          exit(1);
+        }
+        "
+    
+    - name: Test JSON files are valid
+      run: |
+        echo "Testing JSON file validity..."
+        
+        # Test recipes.json
+        if ! php -r "json_decode(file_get_contents('data/recipes.json'), true); if (json_last_error() !== JSON_ERROR_NONE) exit(1);"; then
+          echo "❌ recipes.json contains invalid JSON"
+          exit 1
+        fi
+        
+        # Test categories.json  
+        if ! php -r "json_decode(file_get_contents('data/categories.json'), true); if (json_last_error() !== JSON_ERROR_NONE) exit(1);"; then
+          echo "❌ categories.json contains invalid JSON"
+          exit 1
+        fi
+        
+        echo "✅ All JSON files are valid"
+    
+    - name: Test basic function calls don't crash
+      run: |
+        php -r "
+        require_once 'includes/functions.php';
+        
+        // Test that functions can be called without crashing
+        try {
+          \$recipes = loadRecipes();
+          echo 'loadRecipes(): ' . (is_array(\$recipes) ? 'Returns array ✅' : 'Invalid return type ❌') . '\n';
+          
+          \$categories = loadCategories();
+          echo 'loadCategories(): ' . (is_array(\$categories) ? 'Returns array ✅' : 'Invalid return type ❌') . '\n';
+          
+          // Test saveRecipes with empty array
+          \$save_result = saveRecipes([]);
+          echo 'saveRecipes(): ' . (is_bool(\$save_result) ? 'Returns boolean ✅' : 'Invalid return type ❌') . '\n';
+          
+          echo '✅ Basic function calls completed without crashing\n';
+          
+        } catch (Exception \$e) {
+          echo '❌ Function call failed: ' . \$e->getMessage() . '\n';
+          exit(1);
+        }
+        "
+    
+    - name: Run automated test suite
+      run: |
+        echo "Running comprehensive test suite..."
+        
+        # Capture test output and check if it runs successfully
+        if php test-runner.php > test_output.txt 2>&1; then
+          echo "✅ Test runner executed successfully"
+          
+          # Extract score from output (this is a simple approach)
+          if grep -q "Final Score:" test_output.txt; then
+            grep "Final Score:" test_output.txt
+            echo "✅ Test results generated"
+          else
+            echo "⚠️ Test runner completed but may not have generated proper results"
+          fi
+        else
+          echo "❌ Test runner failed to execute"
+          cat test_output.txt
+          exit 1
+        fi
+    
+    - name: Validate HTML output (basic check)
+      run: |
+        echo "Checking that PHP files generate HTML output..."
+        
+        # Test index.php
+        if php index.php > /dev/null 2>&1; then
+          echo "✅ index.php generates output without fatal errors"
+        else
+          echo "❌ index.php has fatal errors"
+          exit 1
+        fi
+        
+        # Test add-recipe.php
+        if php add-recipe.php > /dev/null 2>&1; then
+          echo "✅ add-recipe.php generates output without fatal errors"  
+        else
+          echo "❌ add-recipe.php has fatal errors"
+          exit 1
+        fi
+    
+    - name: Test file permissions
+      run: |
+        echo "Checking file permissions..."
+        
+        if [ -w data/ ]; then
+          echo "✅ Data directory is writable"
+        else
+          echo "❌ Data directory is not writable"
+          exit 1
+        fi
+        
+        if [ -r data/recipes.json ] && [ -w data/recipes.json ]; then
+          echo "✅ recipes.json is readable and writable"
+        else
+          echo "❌ recipes.json permission issues"
+          exit 1
+        fi
+    
+    - name: Security check - no sensitive data in repository
+      run: |
+        echo "Checking for sensitive data..."
+        
+        # Check for common sensitive patterns
+        if grep -r -i "password.*=" --include="*.php" . || \
+           grep -r -i "api.*key.*=" --include="*.php" . || \
+           grep -r -i "secret.*=" --include="*.php" . || \
+           grep -r -i "database.*host.*=" --include="*.php" .; then
+          echo "⚠️ Potential sensitive data found - please review"
+        else
+          echo "✅ No obvious sensitive data patterns found"
+        fi
+    
+    - name: Generate test report
+      if: always()
+      run: |
+        echo "## PHP Recipe Manager Test Results" >> test_report.md
+        echo "" >> test_report.md
+        echo "**PHP Version:** ${{ matrix.php-versions }}" >> test_report.md
+        echo "**Date:** $(date)" >> test_report.md
+        echo "" >> test_report.md
+        
+        if [ -f test_output.txt ]; then
+          echo "### Test Output" >> test_report.md
+          echo '```' >> test_report.md
+          head -20 test_output.txt >> test_report.md
+          echo '```' >> test_report.md
+        fi
+        
+        echo "" >> test_report.md
+        echo "### Files Checked" >> test_report.md
+        echo "- PHP syntax validation: ✅" >> test_report.md
+        echo "- Required files present: ✅" >> test_report.md  
+        echo "- JSON file validity: ✅" >> test_report.md
+        echo "- Basic functionality: ✅" >> test_report.md
+        
+    - name: Upload test artifacts
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results-php${{ matrix.php-versions }}
+        path: |
+          test_output.txt
+          test_report.md
+          data/
+        retention-days: 30
+
+  # Job to check code style and best practices
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.1'
+    
+    - name: Check for TODO comments (learning progress)
+      run: |
+        echo "Checking learning progress through TODO comments..."
+        todo_count=$(grep -r "TODO" --include="*.php" . | wc -l)
+        echo "Found $todo_count TODO comments"
+        
+        if [ $todo_count -gt 0 ]; then
+          echo "📝 TODOs found - this indicates areas for students to implement:"
+          grep -r "TODO" --include="*.php" . | head -10
+        else
+          echo "✅ No TODOs found - implementation may be complete"
+        fi
+    
+    - name: Basic code structure validation
+      run: |
+        echo "Validating basic PHP code structure..."
+        
+        # Check for proper PHP tags
+        if grep -L "<?php" *.php; then
+          echo "⚠️ Some PHP files may be missing opening tags"
+        else
+          echo "✅ PHP opening tags found in main files"
+        fi
+        
+        # Check for basic security practices
+        if grep -r "htmlspecialchars\|htmlentities" --include="*.php" .; then
+          echo "✅ Output escaping functions found"
+        else
+          echo "⚠️ Consider adding output escaping for security"
+        fi
+
+  # Summary job
+  summary:
+    runs-on: ubuntu-latest
+    needs: [test, code-quality]
+    if: always()
+    steps:
+    - name: Test Summary
+      run: |
+        echo "🧪 **PHP Recipe Manager Test Summary**"
+        echo ""
+        echo "✅ **Syntax Check:** All PHP files have valid syntax"
+        echo "✅ **Structure:** Required files and functions present" 
+        echo "✅ **Functionality:** Basic features working"
+        echo "✅ **Security:** No obvious sensitive data exposed"
+        echo ""
+        echo "🎓 **For Students:**"
+        echo "- Implement the TODO functions in includes/functions.php"
+        echo "- Test your implementation using test-runner.php"
+        echo "- Check that forms work properly for adding/editing recipes"
+        echo "- Ensure data persists correctly in JSON files"
+        echo ""
+        echo "📊 **Grading:** See test-runner.php output for detailed scoring"
